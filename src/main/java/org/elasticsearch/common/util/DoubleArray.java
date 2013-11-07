@@ -39,4 +39,9 @@ public interface DoubleArray extends BigArray {
      */
     public abstract double increment(long index, double inc);
 
+    /**
+     * Fill the slice between <code>startIndex</code> (included) and <code>endIndex</code> (excluded) with <code>value</code>.
+     */
+    public abstract void fill(long startIndex, long endIndex, double value);
+
 }

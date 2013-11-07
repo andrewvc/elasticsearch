@@ -100,7 +100,7 @@ public class NestedAggregator extends SingleBucketAggregator implements ReaderCo
     class Collector extends BucketCollector {
 
         Collector(Aggregator[] aggregators) {
-            super(aggregators);
+            super(0, aggregators);
         }
 
         @Override
@@ -143,7 +143,7 @@ public class NestedAggregator extends SingleBucketAggregator implements ReaderCo
         }
 
         @Override
-        public Aggregator create(AggregationContext context, Aggregator parent, int expectedBucketsCount) {
+        public Aggregator create(AggregationContext context, Aggregator parent, long expectedBucketsCount) {
             return new NestedAggregator(name, factories, path, context, parent);
         }
     }

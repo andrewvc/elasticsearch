@@ -84,9 +84,8 @@ public class GeoDistanceAggregator extends Aggregator {
         super(name, BucketAggregationMode.PER_BUCKET, factories, ranges.size(), aggregationContext, parent);
         this.valuesSource = valuesSource;
         bucketCollectors = new BucketCollector[ranges.size()];
-        int i = 0;
-        for (DistanceRange range : ranges) {
-            bucketCollectors[i++] = new BucketCollector(i, range, factories.createBucketAggregators(this, multiBucketAggregators, ranges.size()));
+        for (int i = 0; i < ranges.size(); ++i) {
+            bucketCollectors[i] = new BucketCollector(i, ranges.get(i), factories.createBucketAggregators(this, multiBucketAggregators, ranges.size()));
         }
         collector = valuesSource == null ? null : new Collector();
     }
@@ -97,7 +96,8 @@ public class GeoDistanceAggregator extends Aggregator {
     }
 
     @Override
-    public void collect(int doc, int owningBucketOrdinal) throws IOException {
+    public void collect(int doc, long owningBucketOrdinal) throws IOException {
+        assert owningBucketOrdinal == 0;
         collector.collect(doc);
     }
 
@@ -107,7 +107,8 @@ public class GeoDistanceAggregator extends Aggregator {
     }
 
     @Override
-    public InternalAggregation buildAggregation(int owningBucketOrdinal) {
+    public InternalAggregation buildAggregation(long owningBucketOrdinal) {
+        assert owningBucketOrdinal == 0;
         List<GeoDistance.Bucket> buckets = Lists.newArrayListWithCapacity(bucketCollectors.length);
         for (BucketCollector collector : bucketCollectors) {
             InternalAggregations aggregations = collector.buildAggregations();
@@ -176,7 +177,7 @@ public class GeoDistanceAggregator extends Aggregator {
 
         private final DistanceRange range;
 
-        BucketCollector(int ord, DistanceRange range, Aggregator[] aggregators) {
+        BucketCollector(long ord, DistanceRange range, Aggregator[] aggregators) {
             super(ord, aggregators);
             this.range = range;
         }
@@ -207,7 +208,7 @@ public class GeoDistanceAggregator extends Aggregator {
         }
 
         @Override
-        protected Aggregator create(GeoPointValuesSource valuesSource, int expectedBucketsCount, AggregationContext aggregationContext, Aggregator parent) {
+        protected Aggregator create(GeoPointValuesSource valuesSource, long expectedBucketsCount, AggregationContext aggregationContext, Aggregator parent) {
             return new GeoDistanceAggregator(name, valuesSource, factories, ranges, aggregationContext, parent);
         }
 

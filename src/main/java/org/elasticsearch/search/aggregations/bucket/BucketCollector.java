@@ -38,21 +38,10 @@ import java.util.List;
  */
 public abstract class BucketCollector {
 
-    // the ordinal of the bucket
-    protected int ord;
-
+    protected final long ord;
     protected final Aggregator[] aggregators;
 
     protected long docCount;
-
-    /**
-     * Creates a new bucket collector. By default, the ordinal of this bucket will be considered to be 0.
-     *
-     * @param aggregators   The aggregators of this bucket
-     */
-    public BucketCollector(Aggregator[] aggregators) {
-        this(0, aggregators);
-    }
 
     /**
      * Creates a new bucket.
@@ -60,7 +49,7 @@ public abstract class BucketCollector {
      * @param ord           The ordinal of this bucket (compared to other sibling buckets in the same aggregator).
      * @param aggregators   The aggregators of this bucket.
      */
-    public BucketCollector(int ord, Aggregator[] aggregators) {
+    public BucketCollector(long ord, Aggregator[] aggregators) {
         this.ord = ord;
         this.aggregators = aggregators;
     }
@@ -103,13 +92,6 @@ public abstract class BucketCollector {
             aggregations.add(aggregators[i].buildAggregation(ord));
         }
         return new InternalAggregations(aggregations);
-    }
-
-    /**
-     * @return The ordinal of this bucket
-     */
-    public int ord() {
-        return ord;
     }
 
     /**

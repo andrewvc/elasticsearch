@@ -137,7 +137,8 @@ public class RangeAggregator extends Aggregator {
     }
 
     @Override
-    public void collect(int doc, int owningBucketOrdinal) throws IOException {
+    public void collect(int doc, long owningBucketOrdinal) throws IOException {
+        assert owningBucketOrdinal == 0;
         collector.collect(doc);
     }
 
@@ -147,7 +148,8 @@ public class RangeAggregator extends Aggregator {
     }
 
     @Override
-    public InternalAggregation buildAggregation(int owningBucketOrdinal) {
+    public InternalAggregation buildAggregation(long owningBucketOrdinal) {
+        assert owningBucketOrdinal == 0;
         List<RangeBase.Bucket> buckets = Lists.newArrayListWithCapacity(bucketCollectors.length);
         for (int i = 0; i < bucketCollectors.length; i++) {
             Range range = bucketCollectors[i].range;
@@ -263,7 +265,7 @@ public class RangeAggregator extends Aggregator {
 
         private final Range range;
 
-        BucketCollector(int ord, Range range, Aggregator[] aggregators) {
+        BucketCollector(long ord, Range range, Aggregator[] aggregators) {
             super(ord, aggregators);
             this.range = range;
         }
@@ -304,7 +306,7 @@ public class RangeAggregator extends Aggregator {
         }
 
         @Override
-        public void collect(int doc, int owningBucketOrdinal) throws IOException {
+        public void collect(int doc, long owningBucketOrdinal) throws IOException {
         }
 
         @Override
@@ -313,7 +315,8 @@ public class RangeAggregator extends Aggregator {
 
 
         @Override
-        public AbstractRangeBase buildAggregation(int owningBucketOrdinal) {
+        public AbstractRangeBase buildAggregation(long owningBucketOrdinal) {
+            assert owningBucketOrdinal == 0;
             List<RangeBase.Bucket> buckets = new ArrayList<RangeBase.Bucket>(ranges.size());
             for (RangeAggregator.Range range : ranges) {
                 range.process(parser, context) ;
@@ -347,7 +350,7 @@ public class RangeAggregator extends Aggregator {
         }
 
         @Override
-        protected Aggregator create(NumericValuesSource valuesSource, int expectedBucketsCount, AggregationContext aggregationContext, Aggregator parent) {
+        protected Aggregator create(NumericValuesSource valuesSource, long expectedBucketsCount, AggregationContext aggregationContext, Aggregator parent) {
             return new RangeAggregator(name, factories, valuesSource, rangeFactory, ranges, keyed, aggregationContext, parent);
         }
     }

@@ -92,7 +92,7 @@ public class AggregatorFactories {
                 }
 
                 @Override
-                public void collect(int doc, int owningBucketOrdinal) throws IOException {
+                public void collect(int doc, long owningBucketOrdinal) throws IOException {
                     aggregators = BigArrays.grow(aggregators, owningBucketOrdinal + 1);
                     Aggregator aggregator = aggregators.get(owningBucketOrdinal);
                     if (aggregator == null) {
@@ -103,12 +103,12 @@ public class AggregatorFactories {
                 }
 
                 @Override
-                public InternalAggregation buildAggregation(int owningBucketOrdinal) {
+                public InternalAggregation buildAggregation(long owningBucketOrdinal) {
                     if (owningBucketOrdinal >= aggregators.size() || aggregators.get(owningBucketOrdinal) == null) {
                         // nocommit: should we have an Aggregator.buildEmptyAggregation instead? or maybe return null and expect callers to deal with it?
                         return first.buildAggregation(1); // we know 1 is unused since we used 0
                     } else {
-                        return aggregators.get(owningBucketOrdinal).buildAggregation(owningBucketOrdinal);
+                        return aggregators.get(owningBucketOrdinal).buildAggregation(0);
                     }
                 }
             };
@@ -129,7 +129,7 @@ public class AggregatorFactories {
     }
 
     /** Only create the multi-bucket aggregators */
-    public Aggregator[] createMultiBucketAggregators(Aggregator parent, int estimatedBucketsCount) {
+    public Aggregator[] createMultiBucketAggregators(Aggregator parent, long estimatedBucketsCount) {
         Aggregator[] aggregators = new Aggregator[ordinals.length];
         for (int i = 0; i < ordinals.length; i++) {
             aggregators[i] = ordinals[i].create(parent.context(), parent, estimatedBucketsCount);
@@ -184,7 +184,7 @@ public class AggregatorFactories {
         }
 
         @Override
-        public Aggregator[] createMultiBucketAggregators(Aggregator parent, int estimatedBucketsCount) {
+        public Aggregator[] createMultiBucketAggregators(Aggregator parent, long estimatedBucketsCount) {
             return EMPTY_AGGREGATORS;
         }
 

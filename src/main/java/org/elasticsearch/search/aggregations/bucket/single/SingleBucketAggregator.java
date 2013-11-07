@@ -59,7 +59,8 @@ public abstract class SingleBucketAggregator extends Aggregator {
     }
 
     @Override
-    public void collect(int doc, int owningBucketOrdinal) throws IOException {
+    public void collect(int doc, long owningBucketOrdinal) throws IOException {
+        assert owningBucketOrdinal == 0;
         collector.collect(doc);
     }
 
@@ -69,7 +70,8 @@ public abstract class SingleBucketAggregator extends Aggregator {
     }
 
     @Override
-    public final InternalAggregation buildAggregation(int owningBucketOrdinal) {
+    public final InternalAggregation buildAggregation(long owningBucketOrdinal) {
+        assert owningBucketOrdinal == 0;
         return buildAggregation(collector.buildAggregations(), collector.docCount());
     }
 

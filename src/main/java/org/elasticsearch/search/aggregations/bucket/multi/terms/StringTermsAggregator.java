@@ -64,7 +64,8 @@ public class StringTermsAggregator extends Aggregator {
     }
 
     @Override
-    public void collect(int doc, int owningBucketOrdinal) throws IOException {
+    public void collect(int doc, long owningBucketOrdinal) throws IOException {
+        assert owningBucketOrdinal == 0;
         collector.collect(doc);
     }
 
@@ -85,7 +86,8 @@ public class StringTermsAggregator extends Aggregator {
     }
 
     @Override
-    public StringTerms buildAggregation(int owningBucketOrdinal) {
+    public StringTerms buildAggregation(long owningBucketOrdinal) {
+        assert owningBucketOrdinal == 0;
         final BytesRefHash bytes = collector.bucketOrds;
         final LongArray counts = collector.counts;
         final int size = Math.min(bytes.size(), requiredSize);

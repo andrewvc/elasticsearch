@@ -24,7 +24,10 @@ import org.apache.lucene.search.Filter;
 import org.apache.lucene.util.Bits;
 import org.elasticsearch.common.lucene.ReaderContextAware;
 import org.elasticsearch.common.lucene.docset.DocIdSets;
-import org.elasticsearch.search.aggregations.*;
+import org.elasticsearch.search.aggregations.AggregationExecutionException;
+import org.elasticsearch.search.aggregations.Aggregator;
+import org.elasticsearch.search.aggregations.InternalAggregation;
+import org.elasticsearch.search.aggregations.InternalAggregations;
 import org.elasticsearch.search.aggregations.bucket.BucketCollector;
 import org.elasticsearch.search.aggregations.bucket.single.SingleBucketAggregator;
 import org.elasticsearch.search.aggregations.context.AggregationContext;
@@ -75,7 +78,7 @@ public class FilterAggregator extends SingleBucketAggregator implements ReaderCo
     class Collector extends BucketCollector {
 
         Collector(Aggregator[] aggregators) {
-            super(aggregators);
+            super(0, aggregators);
         }
 
         @Override
@@ -99,7 +102,7 @@ public class FilterAggregator extends SingleBucketAggregator implements ReaderCo
         }
 
         @Override
-        public Aggregator create(AggregationContext context, Aggregator parent, int expectedBucketsCount) {
+        public Aggregator create(AggregationContext context, Aggregator parent, long expectedBucketsCount) {
             FilterAggregator aggregator = new FilterAggregator(name, filter, factories, context, parent);
             context.registerReaderContextAware(aggregator);
             return aggregator;

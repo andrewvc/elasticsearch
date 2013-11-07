@@ -19,6 +19,7 @@
 
 package org.elasticsearch.common.util;
 
+import com.google.common.base.Preconditions;
 import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.RamUsageEstimator;
 
@@ -75,6 +76,22 @@ final class BigDoubleArray extends AbstractBigArray implements DoubleArray {
     @Override
     protected int numBytesPerElement() {
         return RamUsageEstimator.NUM_BYTES_INT;
+    }
+
+    @Override
+    public void fill(long startIndex, long endIndex, double value) {
+        Preconditions.checkArgument(startIndex <= endIndex);
+        final int startPage = pageIndex(startIndex);
+        final int endPage = pageIndex(endIndex - 1);
+        if (startPage == endPage) {
+            Arrays.fill(pages[startPage], indexInPage(startIndex), indexInPage(endIndex - 1) + 1, value);
+            return;
+        }
+        for (int i = startPage + 1; i < endPage; ++i) {
+            Arrays.fill(pages[i], value);
+        }
+        Arrays.fill(pages[startPage], indexInPage(startIndex), pages[startPage].length, value);
+        Arrays.fill(pages[endPage], 0, indexInPage(endIndex - 1) + 1, value);
     }
 
     /** Change the size of this array. Content between indexes <code>0</code> and <code>min(size(), newSize)</code> will be preserved. */

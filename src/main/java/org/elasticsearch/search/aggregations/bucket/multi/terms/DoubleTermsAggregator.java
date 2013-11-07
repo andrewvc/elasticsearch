@@ -61,7 +61,8 @@ public class DoubleTermsAggregator extends Aggregator {
     }
 
     @Override
-    public void collect(int doc, int owningBucketOrdinal) throws IOException {
+    public void collect(int doc, long owningBucketOrdinal) throws IOException {
+        assert owningBucketOrdinal == 0;
         collector.collect(doc);
     }
 
@@ -82,7 +83,7 @@ public class DoubleTermsAggregator extends Aggregator {
     }
 
     @Override
-    public DoubleTerms buildAggregation(int owningBucketOrdinal) {
+    public DoubleTerms buildAggregation(long owningBucketOrdinal) {
         final LongHash values = collector.bucketOrds;
         final LongArray counts = collector.counts;
         final int size = (int) Math.min(values.size(), requiredSize);
@@ -110,7 +111,7 @@ public class DoubleTermsAggregator extends Aggregator {
             final OrdinalBucket bucket = (OrdinalBucket) ordered.pop();
             final InternalAggregation[] aggregations = new InternalAggregation[subAggregators.length];
             for (int j = 0; j < subAggregators.length; ++j) {
-                aggregations[j] = subAggregators[j].buildAggregation((int) bucket.bucketOrd); // nocommit bucket ord should be a long
+                aggregations[j] = subAggregators[j].buildAggregation(bucket.bucketOrd);
             }
             bucket.aggregations = new InternalAggregations(Arrays.asList(aggregations));
             list[i] = bucket;
@@ -143,7 +144,7 @@ public class DoubleTermsAggregator extends Aggregator {
                 }
                 counts.increment(bucketOrdinal, 1);
                 for (Aggregator subAggregator : subAggregators) {
-                    subAggregator.collect(doc, (int) bucketOrdinal); // nocommit bucket ord should be a long
+                    subAggregator.collect(doc, bucketOrdinal);
                 }
             }
         }

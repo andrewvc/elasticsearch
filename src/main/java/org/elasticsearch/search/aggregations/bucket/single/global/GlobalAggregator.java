@@ -52,7 +52,7 @@ public class GlobalAggregator extends SingleBucketAggregator {
     class Collector extends BucketCollector {
 
         Collector(Aggregator[] aggregators) {
-            super(aggregators);
+            super(0, aggregators);
         }
 
         @Override
@@ -73,7 +73,7 @@ public class GlobalAggregator extends SingleBucketAggregator {
         }
 
         @Override
-        public Aggregator create(AggregationContext context, Aggregator parent, int expectedBucketsCount) {
+        public Aggregator create(AggregationContext context, Aggregator parent, long expectedBucketsCount) {
             if (parent != null) {
                 throw new AggregationExecutionException("Aggregation [" + parent.name() + "] cannot have a global " +
                         "sub-aggregation [" + name + "]. Global aggregations can only be defined as top level aggregations");

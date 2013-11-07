@@ -23,6 +23,8 @@ import com.google.common.base.Preconditions;
 import org.apache.lucene.util.ArrayUtil;
 import org.apache.lucene.util.RamUsageEstimator;
 
+import java.util.Arrays;
+
 /** Utility class to work with arrays. */
 public enum BigArrays {
     ;
@@ -154,6 +156,13 @@ public enum BigArrays {
         public double increment(long index, double inc) {
             assert indexIsInt(index);
             return array[(int) index] += inc;
+        }
+
+        @Override
+        public void fill(long startIndex, long endIndex, double value) {
+            assert indexIsInt(startIndex);
+            assert indexIsInt(endIndex);
+            Arrays.fill(array, (int) startIndex, (int) endIndex, value);
         }
 
     }
