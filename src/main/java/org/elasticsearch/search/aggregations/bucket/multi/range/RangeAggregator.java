@@ -268,21 +268,6 @@ public class RangeAggregator extends Aggregator {
         }
     }
 
-    static class BucketCollector extends org.elasticsearch.search.aggregations.bucket.BucketCollector {
-
-        private final Range range;
-
-        BucketCollector(long ord, Range range, Aggregator[] aggregators) {
-            super(ord, aggregators);
-            this.range = range;
-        }
-
-        @Override
-        protected boolean onDoc(int doc) throws IOException {
-            return true;
-        }
-    }
-
     public static class Unmapped extends Aggregator {
         private final List<RangeAggregator.Range> ranges;
         private final boolean keyed;
