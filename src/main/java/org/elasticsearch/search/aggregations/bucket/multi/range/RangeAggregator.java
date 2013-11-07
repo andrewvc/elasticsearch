@@ -20,7 +20,6 @@
 package org.elasticsearch.search.aggregations.bucket.multi.range;
 
 import com.carrotsearch.hppc.IntArrayList;
-import com.google.common.collect.Lists;
 import org.apache.lucene.util.InPlaceMergeSorter;
 import org.elasticsearch.index.fielddata.DoubleValues;
 import org.elasticsearch.search.aggregations.Aggregator;
@@ -36,6 +35,7 @@ import org.elasticsearch.search.aggregations.factory.ValueSourceAggregatorFactor
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -83,31 +83,32 @@ public class RangeAggregator extends Aggregator {
     private final boolean keyed;
     private final AbstractRangeBase.Factory rangeFactory;
     private final Collector collector;
-    private final BucketCollector[] bucketCollectors;
+    private final Aggregator[] subAggregators;
+    private final long[] counts;
 
     public RangeAggregator(String name,
                            AggregatorFactories factories,
                            NumericValuesSource valuesSource,
                            AbstractRangeBase.Factory rangeFactory,
-                           List<Range> ranges,
+                           List<Range> rangesList,
                            boolean keyed,
                            AggregationContext aggregationContext,
                            Aggregator parent) {
 
-        super(name, BucketAggregationMode.PER_BUCKET, factories, ranges.size(), aggregationContext, parent);
+        super(name, BucketAggregationMode.PER_BUCKET, factories, rangesList.size(), aggregationContext, parent);
         this.valuesSource = valuesSource;
         this.keyed = keyed;
         this.rangeFactory = rangeFactory;
-        bucketCollectors = new BucketCollector[ranges.size()];
-        this.ranges = ranges.toArray(new Range[ranges.size()]);
-        sortRanges();
-        for (int i = 0; i < this.ranges.length; ++i) {
-            final Range range = this.ranges[i];
+        this.ranges = rangesList.toArray(new Range[rangesList.size()]);
+        for (int i = 0; i < ranges.length; ++i) {
+            final Range range = ranges[i];
             ValueParser parser = valuesSource != null ? valuesSource.parser() : null;
             range.process(parser, aggregationContext);
-            bucketCollectors[i] = new BucketCollector(i, range, factories.createBucketAggregators(this, multiBucketAggregators, ranges.size()));
         }
+        sortRanges();
         collector = valuesSource == null ? null : new Collector();
+        subAggregators = factories.createBucketAggregatorsAsMulti(this, this.ranges.length);
+        counts = new long[this.ranges.length];
     }
 
     private void sortRanges() {
@@ -150,17 +151,20 @@ public class RangeAggregator extends Aggregator {
     @Override
     public InternalAggregation buildAggregation(long owningBucketOrdinal) {
         assert owningBucketOrdinal == 0;
-        List<RangeBase.Bucket> buckets = Lists.newArrayListWithCapacity(bucketCollectors.length);
-        for (int i = 0; i < bucketCollectors.length; i++) {
-            Range range = bucketCollectors[i].range;
-            RangeBase.Bucket bucket = rangeFactory.createBucket(range.key, range.from, range.to, bucketCollectors[i].docCount(),
-                    bucketCollectors[i].buildAggregations(), valuesSource.formatter());
-            buckets.add(bucket);
-        }
-
         // value source can be null in the case of unmapped fields
-        ValueFormatter formatter = valuesSource != null ? valuesSource.formatter() : null;
-        return rangeFactory.create(name, buckets, formatter, keyed);
+        final ValueFormatter formatter = valuesSource != null ? valuesSource.formatter() : null;
+
+        final RangeBase.Bucket[] buckets = new RangeBase.Bucket[ranges.length];
+        for (int i = 0; i < ranges.length; ++i) {
+            final InternalAggregation[] aggregations = new InternalAggregation[subAggregators.length];
+            for (int j = 0; j < subAggregators.length; ++j) {
+                aggregations[j] = subAggregators[j].buildAggregation(i);
+            }
+            final InternalAggregations aggregation = new InternalAggregations(Arrays.asList(aggregations));
+            final Range range = ranges[i];
+            buckets[i] = rangeFactory.createBucket(range.key, range.from, range.to, counts[i], aggregation, formatter);
+        }
+        return rangeFactory.create(name, Arrays.asList(buckets), formatter, keyed);
     }
 
     class Collector {
@@ -249,14 +253,17 @@ public class RangeAggregator extends Aggregator {
                 if (!matched[i] && ranges[i].matches(value)) {
                     matched[i] = true;
                     matchedList.add(i);
-                    bucketCollectors[i].collect(doc);
+                    ++counts[i];
+                    for (Aggregator aggregator : subAggregators) {
+                        aggregator.collect(doc, i);
+                    }
                 }
             }
         }
 
         public void postCollection() {
-            for (int i = 0; i < bucketCollectors.length; i++) {
-                bucketCollectors[i].postCollection();
+            for (int i = 0; i < subAggregators.length; i++) {
+                subAggregators[i].postCollection();
             }
         }
     }
