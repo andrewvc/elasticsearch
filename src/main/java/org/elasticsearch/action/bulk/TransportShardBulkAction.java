@@ -64,8 +64,7 @@ import org.elasticsearch.threadpool.ThreadPool;
 import org.elasticsearch.transport.TransportRequestOptions;
 import org.elasticsearch.transport.TransportService;
 
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Performs the index operation.
@@ -136,8 +135,132 @@ public class TransportShardBulkAction extends TransportShardReplicationOperation
         return clusterState.routingTable().index(request.index()).shard(request.shardId()).shardsIt();
     }
 
+    class PrimaryShardResponseProcessor implements Runnable {
+        // As we move through requests we build up a list of results for each operation
+        class ProcessingResult {
+            public final BulkItemResponse response;
+            public final Engine.IndexingOperation op;
+            public final long preVersion;
+            public final BulkItemRequest request;
+
+            ProcessingResult(BulkItemRequest request, BulkItemResponse response, Engine.IndexingOperation op, long preVersion) {
+                this.request = request;
+                this.response = response;
+                this.op = op;
+                this.preVersion = preVersion;
+            }
+
+            public ProcessingResult(BulkItemRequest request, BulkItemResponse bulkItemResponse) {
+                this(request, bulkItemResponse, null, 0l);
+            }
+        }
+
+        private final BulkShardRequest request;
+        private final IndexShard indexShard;
+        private final PrimaryOperationRequest shardRequest;
+        private final ClusterState clusterState;
+
+        private final Set<Tuple<String, String>> mappingsToUpdate;
+        private final List<ProcessingResult> processingResults;
+
+        PrimaryShardResponseProcessor(ClusterState clusterState, PrimaryOperationRequest shardRequest) {
+            this.clusterState = clusterState;
+            this.shardRequest = shardRequest;
+            this.request = shardRequest.request;
+            this.indexShard = indicesService.indexServiceSafe(shardRequest.request.index()).shardSafe(shardRequest.shardId);
+
+            int numberRequests = request.items().length;
+            this.processingResults = new ArrayList<ProcessingResult>(numberRequests);
+            this.mappingsToUpdate = new HashSet<Tuple<String, String>>();
+        }
+
+        public void run() {
+            for (BulkItemRequest itemRequest: request.items()) {
+                final ActionRequest thisRequest = itemRequest.request();
+                if (thisRequest instanceof IndexRequest) {
+                    final IndexRequest indexRequest = (IndexRequest) thisRequest;
+                    try {
+                        processRequest(indexRequest, itemRequest);
+                    } catch (Throwable e) {
+                        handlePrimaryException(e);
+                        handleElasticsearchException(itemRequest, indexRequest, e);
+                    }
+                } else if (thisRequest instanceof DeleteRequest) {
+                    DeleteRequest deleteRequest = (DeleteRequest) thisRequest;
+                    try {
+                        processRequest(deleteRequest, itemRequest);
+                    } catch (Throwable e) {
+                        handlePrimaryException(e);
+                        handleElasticsearchException(itemRequest, deleteRequest, e);
+                    }
+                } else if (thisRequest instanceof UpdateRequest) {
+                    processRequest((UpdateRequest) thisRequest, itemRequest);
+                }
+            }
+        }
+
+        private void processRequest(IndexRequest indexRequest, BulkItemRequest itemRequest) {
+            final WriteResult result = shardIndexOperation(request, indexRequest, clusterState, indexShard, true);
+            final IndexResponse indexResponse = result.response();
+
+            BulkItemResponse bulkItemResponse = new BulkItemResponse(itemRequest.id(), indexRequest.opType().lowercase(), indexResponse);
+
+            final ProcessingResult processingResult = new ProcessingResult(itemRequest, bulkItemResponse, result.op, result.preVersion);
+            this.processingResults.add(processingResult);
+
+            if (result.mappingToUpdate != null) {
+                mappingsToUpdate.add(result.mappingToUpdate);
+            }
+        }
+
+        private void processRequest(DeleteRequest deleteRequest, BulkItemRequest itemRequest) {
+            final DeleteResponse deleteResponse = shardDeleteOperation(deleteRequest, indexShard).response();
+            final BulkItemResponse bulkItemResponse = new BulkItemResponse(itemRequest.id(), "delete", deleteResponse);
+            ProcessingResult processingResult = new ProcessingResult(itemRequest, bulkItemResponse);
+            this.processingResults.add(processingResult);
+        }
+
+        private void processRequest(UpdateRequest thisRequest, BulkItemRequest itemRequest) {
+        }
+
+        // restore updated versions...
+        private void handlePrimaryException(Throwable e) throws ElasticSearchException {
+            if (retryPrimaryException(e)) {
+                for (ProcessingResult processingResult : this.processingResults) {
+                    applyVersion(processingResult.request, processingResult.preVersion);
+                }
+                throw (ElasticSearchException) e;
+            }
+        }
+
+        private BulkItemResponse handleElasticsearchException(BulkItemRequest itemRequest, IndexRequest indexRequest, Throwable e) {
+            logElasticsearchException(indexRequest, e);
+            return new BulkItemResponse(itemRequest.id(), "index",
+                    new BulkItemResponse.Failure(indexRequest.index(), indexRequest.type(), indexRequest.id(), ExceptionsHelper.detailedMessage(e)));
+        }
+
+        private BulkItemResponse handleElasticsearchException(BulkItemRequest itemRequest, DeleteRequest deleteRequest, Throwable e) {
+            logElasticsearchException(deleteRequest, e);
+
+            return new BulkItemResponse(itemRequest.id(), "delete",
+                            new BulkItemResponse.Failure(deleteRequest.index(), deleteRequest.type(), deleteRequest.id(), ExceptionsHelper.detailedMessage(e)));
+        }
+
+        private void logElasticsearchException(ActionRequest actionRequest, Throwable e) {
+            if (e instanceof ElasticSearchException && ((ElasticSearchException) e).status() == RestStatus.CONFLICT) {
+                logger.trace("[{}][{}] failed to execute bulk item (" + actionRequest + ") {}", e, shardRequest.request.index(), shardRequest.shardId, actionRequest);
+            } else {
+                logger.debug("[{}][{}] failed to execute bulk item (" + actionRequest + ") {}", e, shardRequest.request.index(), shardRequest.shardId, actionRequest);
+            }
+        }
+    }
+
     @Override
     protected PrimaryResponse<BulkShardResponse, BulkShardRequest> shardOperationOnPrimary(ClusterState clusterState, PrimaryOperationRequest shardRequest) {
+        final PrimaryShardResponseProcessor primaryShardResponseProcessor = new PrimaryShardResponseProcessor(clusterState, shardRequest);
+        primaryShardResponseProcessor.run();
+
+
         final BulkShardRequest request = shardRequest.request;
         IndexShard indexShard = indicesService.indexServiceSafe(shardRequest.request.index()).shardSafe(shardRequest.shardId);
         Engine.IndexingOperation[] ops = null;
