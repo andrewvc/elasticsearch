@@ -65,6 +65,7 @@ import org.elasticsearch.transport.TransportRequestOptions;
 import org.elasticsearch.transport.TransportService;
 
 import java.util.*;
+import java.util.concurrent.Callable;
 
 /**
  * Performs the index operation.
@@ -135,7 +136,7 @@ public class TransportShardBulkAction extends TransportShardReplicationOperation
         return clusterState.routingTable().index(request.index()).shard(request.shardId()).shardsIt();
     }
 
-    class PrimaryShardResponseProcessor implements Runnable {
+    class PrimaryShardResponseProcessor implements Callable<PrimaryResponse<BulkShardResponse,BulkShardRequest>> {
         // As we move through requests we build up a list of results for each operation
         class ProcessingResult {
             public final BulkItemResponse response;
@@ -174,7 +175,8 @@ public class TransportShardBulkAction extends TransportShardReplicationOperation
             this.mappingsToUpdate = new HashSet<Tuple<String, String>>();
         }
 
-        public void run() {
+        @Override
+        public PrimaryResponse<BulkShardResponse, BulkShardRequest> call() {
             for (BulkItemRequest itemRequest: request.items()) {
                 final ActionRequest thisRequest = itemRequest.request();
                 if (thisRequest instanceof IndexRequest) {
@@ -197,6 +199,11 @@ public class TransportShardBulkAction extends TransportShardReplicationOperation
                     processRequest((UpdateRequest) thisRequest, itemRequest);
                 }
             }
+
+
+            BulkShardResponse response = new BulkShardResponse(new ShardId(request.index(), request.shardId()), responses);
+            return new PrimaryResponse<BulkShardResponse, BulkShardRequest>(shardRequest.request, response, ops);return null;
+
         }
 
         private void processRequest(IndexRequest indexRequest, BulkItemRequest itemRequest) {
@@ -220,7 +227,175 @@ public class TransportShardBulkAction extends TransportShardReplicationOperation
             this.processingResults.add(processingResult);
         }
 
-        private void processRequest(UpdateRequest thisRequest, BulkItemRequest itemRequest) {
+        private void processRequest(UpdateRequest updateRequest, BulkItemRequest itemRequest) {
+            // TODO: This function needs to be refactored into more smaller ones, but since so much has already been refactored
+            // at this point, let's defer that for the time being
+            // Try and update multiple times if conflicts occur
+
+            class UpdateProcessor implements Callable<ProcessingResult> {
+                private final UpdateRequest updateRequest;
+                private final BulkItemRequest itemRequest;
+
+                UpdateProcessor(UpdateRequest updateRequest, BulkItemRequest itemRequest) {
+                    this.updateRequest = updateRequest;
+                    this.itemRequest = itemRequest;
+                }
+
+                @Override
+                public ProcessingResult call() throws Exception {
+                    UpdateResult updateResult;
+                    ProcessingResult processingResult;
+                    for (int updateAttemptsCount = 0; updateAttemptsCount <= updateRequest.retryOnConflict(); updateAttemptsCount++) {
+                        try {
+                            updateResult = shardUpdateOperation(clusterState, request, updateRequest, indexShard);
+                        } catch (Throwable t) {
+                            updateResult = new UpdateResult(null, null, false, t, null);
+                        }
+
+                        if (updateResult.success()) {
+                            switch (updateResult.result.operation()) {
+                                case UPSERT:
+                                case INDEX:
+                                    processingResult = upsertOrIndexOp(updateResult);
+                                    break;
+                                case DELETE:
+                                    processingResult = deleteOp(updateResult);
+                                    break;
+                                case NONE:
+                                    processingResult = noOp(updateResult);
+                                    break;
+                            }
+                        } else {
+
+                        }
+                    }
+                    return processingResult;
+                }
+
+                private ProcessingResult noOp(UpdateResult updateResult) {
+                    BulkItemResponse itemResponse = new BulkItemResponse(itemRequest.id(), "update", updateResult.noopResult);
+                    return new ProcessingResult(null, itemResponse);
+                }
+
+                private ProcessingResult deleteOp(UpdateResult updateResult) {
+                    final DeleteResponse response = updateResult.writeResult.response();
+                    final DeleteRequest deleteRequest = updateResult.request();
+                    final UpdateResponse updateResponse = new UpdateResponse(response.getIndex(), response.getType(), response.getId(), response.getVersion(), false);
+                    updateResponse.setGetResult(updateHelper.extractGetResult(updateRequest, response.getVersion(), updateResult.result.updatedSourceAsMap(), updateResult.result.updateSourceContentType(), null));
+
+
+                    final BulkItemResponse itemResponse = new BulkItemResponse(itemRequest.id(), "update", updateResponse);
+                    // Replace the update request to the translated delete request to execute on the replica.
+                    final BulkItemRequest resultItemRequest = new BulkItemRequest(itemRequest.id(), deleteRequest);
+                    new ProcessingResult(resultItemRequest, itemResponse);
+                }
+
+                private ProcessingResult upsertOrIndexOp(UpdateResult updateResult) {
+                    final WriteResult result = updateResult.writeResult;
+                    final IndexRequest indexRequest = updateResult.request();
+                    final BytesReference indexSourceAsBytes = indexRequest.source();
+                    // add the response
+                    final IndexResponse indexResponse = result.response();
+                    final UpdateResponse updateResponse = new UpdateResponse(indexResponse.getIndex(), indexResponse.getType(), indexResponse.getId(), indexResponse.getVersion(), indexResponse.isCreated());
+
+                    if (updateRequest.fields() != null && updateRequest.fields().length > 0) {
+                        Tuple<XContentType, Map<String, Object>> sourceAndContent = XContentHelper.convertToMap(indexSourceAsBytes, true);
+                        updateResponse.setGetResult(updateHelper.extractGetResult(updateRequest, indexResponse.getVersion(), sourceAndContent.v2(), sourceAndContent.v1(), indexSourceAsBytes));
+                    }
+
+                    final BulkItemResponse itemResponse = new BulkItemResponse(itemRequest.id(), "update", updateResponse);
+
+                    mappingsToUpdate.add(result.mappingToUpdate);
+
+                    // Replace the update request to the translated index request to execute on the replica.
+                    final BulkItemRequest resultItemRequest = new BulkItemRequest(itemRequest.id(), indexRequest);
+                    return new ProcessingResult(resultItemRequest, itemResponse, result.op, result.preVersion);
+                }
+            }
+
+
+            for (int updateAttemptsCount = 0; updateAttemptsCount <= updateRequest.retryOnConflict(); updateAttemptsCount++) {
+                BulkItemResponse itemResponse;
+                BulkItemRequest resultItemRequest;
+                ProcessingResult processingResult;
+                UpdateResult updateResult;
+                try {
+                    updateResult = shardUpdateOperation(clusterState, request, updateRequest, indexShard);
+                } catch (Throwable t) {
+                    updateResult = new UpdateResult(null, null, false, t, null);
+                }
+                if (updateResult.success()) {
+
+                    switch (updateResult.result.operation()) {
+                        case UPSERT:
+                        case INDEX:
+
+                            break;
+                        case DELETE:
+
+                            break;
+                        case NONE:
+
+                            break;
+                    }
+                    break;
+                } else if (updateResult.failure()) {
+                    Throwable t = updateResult.error;
+                    if (updateResult.retry) {
+                        // updateAttemptCount is 0 based and marks current attempt, if it's equal to retryOnConflict we are going out of the iteration
+                        if (updateAttemptsCount >= updateRequest.retryOnConflict()) {
+                            // we can't try any more
+                            responses[requestIndex] = new BulkItemResponse(itemRequest.id(), "update",
+                                    new BulkItemResponse.Failure(updateRequest.index(), updateRequest.type(), updateRequest.id(), ExceptionsHelper.detailedMessage(t)));
+                            ;
+
+                            request.items()[requestIndex] = null; // do not send to replicas
+                        }
+                    } else {
+                        // rethrow the failure if we are going to retry on primary and let parent failure to handle it
+                        if (retryPrimaryException(t)) {
+                            // restore updated versions...
+                            for (int j = 0; j < requestIndex; j++) {
+                                applyVersion(request.items()[j], preVersions[j]);
+                            }
+                            throw (ElasticSearchException) t;
+                        }
+                        if (updateResult.result == null) {
+                            responses[requestIndex] = new BulkItemResponse(itemRequest.id(), "update", new BulkItemResponse.Failure(updateRequest.index(), updateRequest.type(), updateRequest.id(), ExceptionsHelper.detailedMessage(t)));
+                        } else {
+                            switch (updateResult.result.operation()) {
+                                case UPSERT:
+                                case INDEX:
+                                    IndexRequest indexRequest = updateResult.request();
+                                    if (t instanceof ElasticSearchException && ((ElasticSearchException) t).status() == RestStatus.CONFLICT) {
+                                        logger.trace("[{}][{}] failed to execute bulk item (index) {}", t, shardRequest.request.index(), shardRequest.shardId, indexRequest);
+                                    } else {
+                                        logger.debug("[{}][{}] failed to execute bulk item (index) {}", t, shardRequest.request.index(), shardRequest.shardId, indexRequest);
+                                    }
+                                    responses[requestIndex] = new BulkItemResponse(itemRequest.id(), indexRequest.opType().lowercase(),
+                                            new BulkItemResponse.Failure(indexRequest.index(), indexRequest.type(), indexRequest.id(), ExceptionsHelper.detailedMessage(t)));
+                                    break;
+                                case DELETE:
+                                    DeleteRequest deleteRequest = updateResult.request();
+                                    if (t instanceof ElasticSearchException && ((ElasticSearchException) t).status() == RestStatus.CONFLICT) {
+                                        logger.trace("[{}][{}] failed to execute bulk item (delete) {}", t, shardRequest.request.index(), shardRequest.shardId, deleteRequest);
+                                    } else {
+                                        logger.debug("[{}][{}] failed to execute bulk item (delete) {}", t, shardRequest.request.index(), shardRequest.shardId, deleteRequest);
+                                    }
+                                    responses[requestIndex] = new BulkItemResponse(itemRequest.id(), "delete",
+                                            new BulkItemResponse.Failure(deleteRequest.index(), deleteRequest.type(), deleteRequest.id(), ExceptionsHelper.detailedMessage(t)));
+                                    break;
+                            }
+                        }
+                        // nullify the request so it won't execute on the replicas
+                        request.items()[requestIndex] = null;
+                        // NOTE: Breaking out of the retry_on_conflict loop!
+                        break;
+                    }
+
+                }
+            }
+
         }
 
         // restore updated versions...
@@ -257,8 +432,7 @@ public class TransportShardBulkAction extends TransportShardReplicationOperation
 
     @Override
     protected PrimaryResponse<BulkShardResponse, BulkShardRequest> shardOperationOnPrimary(ClusterState clusterState, PrimaryOperationRequest shardRequest) {
-        final PrimaryShardResponseProcessor primaryShardResponseProcessor = new PrimaryShardResponseProcessor(clusterState, shardRequest);
-        primaryShardResponseProcessor.run();
+        return new PrimaryShardResponseProcessor(clusterState, shardRequest).call();
 
 
         final BulkShardRequest request = shardRequest.request;
@@ -337,117 +511,7 @@ public class TransportShardBulkAction extends TransportShardReplicationOperation
             } else if (item.request() instanceof UpdateRequest) {
                 UpdateRequest updateRequest = (UpdateRequest) item.request();
                 //  We need to do the requested retries plus the initial attempt. We don't do < 1+retry_on_conflict because retry_on_conflict may be Integer.MAX_VALUE
-                for (int updateAttemptsCount = 0; updateAttemptsCount <= updateRequest.retryOnConflict(); updateAttemptsCount++) {
-                    UpdateResult updateResult;
-                    try {
-                        updateResult = shardUpdateOperation(clusterState, request, updateRequest, indexShard);
-                    } catch (Throwable t) {
-                        updateResult = new UpdateResult(null, null, false, t, null);
-                    }
-                    if (updateResult.success()) {
 
-                        switch (updateResult.result.operation()) {
-                            case UPSERT:
-                            case INDEX:
-                                WriteResult result = updateResult.writeResult;
-                                IndexRequest indexRequest = updateResult.request();
-                                BytesReference indexSourceAsBytes = indexRequest.source();
-                                // add the response
-                                IndexResponse indexResponse = result.response();
-                                UpdateResponse updateResponse = new UpdateResponse(indexResponse.getIndex(), indexResponse.getType(), indexResponse.getId(), indexResponse.getVersion(), indexResponse.isCreated());
-                                if (updateRequest.fields() != null && updateRequest.fields().length > 0) {
-                                    Tuple<XContentType, Map<String, Object>> sourceAndContent = XContentHelper.convertToMap(indexSourceAsBytes, true);
-                                    updateResponse.setGetResult(updateHelper.extractGetResult(updateRequest, indexResponse.getVersion(), sourceAndContent.v2(), sourceAndContent.v1(), indexSourceAsBytes));
-                                }
-                                responses[requestIndex] = new BulkItemResponse(item.id(), "update", updateResponse);
-                                preVersions[requestIndex] = result.preVersion;
-                                if (result.mappingToUpdate != null) {
-                                    if (mappingsToUpdate == null) {
-                                        mappingsToUpdate = Sets.newHashSet();
-                                    }
-                                    mappingsToUpdate.add(result.mappingToUpdate);
-                                }
-                                if (result.op != null) {
-                                    if (ops == null) {
-                                        ops = new Engine.IndexingOperation[request.items().length];
-                                    }
-                                    ops[requestIndex] = result.op;
-                                }
-                                // Replace the update request to the translated index request to execute on the replica.
-                                request.items()[requestIndex] = new BulkItemRequest(request.items()[requestIndex].id(), indexRequest);
-                                break;
-                            case DELETE:
-                                DeleteResponse response = updateResult.writeResult.response();
-                                DeleteRequest deleteRequest = updateResult.request();
-                                updateResponse = new UpdateResponse(response.getIndex(), response.getType(), response.getId(), response.getVersion(), false);
-                                updateResponse.setGetResult(updateHelper.extractGetResult(updateRequest, response.getVersion(), updateResult.result.updatedSourceAsMap(), updateResult.result.updateSourceContentType(), null));
-                                responses[requestIndex] = new BulkItemResponse(item.id(), "update", updateResponse);
-                                // Replace the update request to the translated delete request to execute on the replica.
-                                request.items()[requestIndex] = new BulkItemRequest(request.items()[requestIndex].id(), deleteRequest);
-                                break;
-                            case NONE:
-                                responses[requestIndex] = new BulkItemResponse(item.id(), "update", updateResult.noopResult);
-                                request.items()[requestIndex] = null; // No need to go to the replica
-                                break;
-                        }
-                        // NOTE: Breaking out of the retry_on_conflict loop!
-                        break;
-                    } else if (updateResult.failure()) {
-                        Throwable t = updateResult.error;
-                        if (updateResult.retry) {
-                            // updateAttemptCount is 0 based and marks current attempt, if it's equal to retryOnConflict we are going out of the iteration
-                            if (updateAttemptsCount >= updateRequest.retryOnConflict()) {
-                                // we can't try any more
-                                responses[requestIndex] = new BulkItemResponse(item.id(), "update",
-                                        new BulkItemResponse.Failure(updateRequest.index(), updateRequest.type(), updateRequest.id(), ExceptionsHelper.detailedMessage(t)));
-                                ;
-
-                                request.items()[requestIndex] = null; // do not send to replicas
-                            }
-                        } else {
-                            // rethrow the failure if we are going to retry on primary and let parent failure to handle it
-                            if (retryPrimaryException(t)) {
-                                // restore updated versions...
-                                for (int j = 0; j < requestIndex; j++) {
-                                    applyVersion(request.items()[j], preVersions[j]);
-                                }
-                                throw (ElasticSearchException) t;
-                            }
-                            if (updateResult.result == null) {
-                                responses[requestIndex] = new BulkItemResponse(item.id(), "update", new BulkItemResponse.Failure(updateRequest.index(), updateRequest.type(), updateRequest.id(), ExceptionsHelper.detailedMessage(t)));
-                            } else {
-                                switch (updateResult.result.operation()) {
-                                    case UPSERT:
-                                    case INDEX:
-                                        IndexRequest indexRequest = updateResult.request();
-                                        if (t instanceof ElasticSearchException && ((ElasticSearchException) t).status() == RestStatus.CONFLICT) {
-                                            logger.trace("[{}][{}] failed to execute bulk item (index) {}", t, shardRequest.request.index(), shardRequest.shardId, indexRequest);
-                                        } else {
-                                            logger.debug("[{}][{}] failed to execute bulk item (index) {}", t, shardRequest.request.index(), shardRequest.shardId, indexRequest);
-                                        }
-                                        responses[requestIndex] = new BulkItemResponse(item.id(), indexRequest.opType().lowercase(),
-                                                new BulkItemResponse.Failure(indexRequest.index(), indexRequest.type(), indexRequest.id(), ExceptionsHelper.detailedMessage(t)));
-                                        break;
-                                    case DELETE:
-                                        DeleteRequest deleteRequest = updateResult.request();
-                                        if (t instanceof ElasticSearchException && ((ElasticSearchException) t).status() == RestStatus.CONFLICT) {
-                                            logger.trace("[{}][{}] failed to execute bulk item (delete) {}", t, shardRequest.request.index(), shardRequest.shardId, deleteRequest);
-                                        } else {
-                                            logger.debug("[{}][{}] failed to execute bulk item (delete) {}", t, shardRequest.request.index(), shardRequest.shardId, deleteRequest);
-                                        }
-                                        responses[requestIndex] = new BulkItemResponse(item.id(), "delete",
-                                                new BulkItemResponse.Failure(deleteRequest.index(), deleteRequest.type(), deleteRequest.id(), ExceptionsHelper.detailedMessage(t)));
-                                        break;
-                                }
-                            }
-                            // nullify the request so it won't execute on the replicas
-                            request.items()[requestIndex] = null;
-                            // NOTE: Breaking out of the retry_on_conflict loop!
-                            break;
-                        }
-
-                    }
-                }
             }
 
             assert responses[requestIndex] != null; // we must have set a response somewhere.
